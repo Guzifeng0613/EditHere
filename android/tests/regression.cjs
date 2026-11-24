@@ -90,7 +90,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     // ---- T1 打开素材 ----
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900"><rect width="600" height="900" fill="#0B1A2E"/><rect x="40" y="120" width="520" height="160" fill="#132C4A"/><rect x="60" y="150" width="200" height="36" fill="#FFB352"/><rect x="60" y="210" width="360" height="18" fill="#6AADFF"/><rect x="40" y="330" width="520" height="300" fill="#132C4A"/><rect x="60" y="370" width="480" height="56" fill="#3E74EF"/><rect x="60" y="460" width="300" height="18" fill="#88A7FF"/></svg>`;
     await loadPng(600, 900, 'data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'));
-    ok('T1 image loaded, export enabled', await page.locator('#export').isEnabled() && await page.locator('#save-project').isEnabled());
+    ok('T1 image loaded, save project enabled', await page.locator('#save-project').isEnabled());
+    ok('T1 导出收口：反馈/JSON/批注图入口已隐藏', await page.evaluate(() =>
+      ['export', 'save-json', 'preview'].every(id => { const el = document.getElementById(id); return el && el.getClientRects().length === 0; })
+      && getComputedStyle(document.querySelector('.save-control')).display === 'none'
+      && !!document.getElementById('eh-notes-image')), 'hide ok');
     const sb = await box('#stage');
     ok('T1 stage fit within viewport', sb.x >= 0 && sb.x + sb.width <= 420 && sb.y >= 0, JSON.stringify(sb));
     const P = (fx, fy) => ({ x: sb.x + sb.width * fx, y: sb.y + sb.height * fy });
@@ -133,25 +137,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const noteCount = countAnn(proj);
     ok('T6 project JSON valid with 2 notes', noteCount === 2, `keys=${Object.keys(proj || {}).join(',')} notes=${noteCount}`);
 
-    // ---- T7 导出反馈 ----
+    // ---- T7 导出收口（反馈 JSON 入口已移除，底层仍可渲染批注图）----
     await page.evaluate(() => { window.__calls.length = 0; window.__files = {}; });
-    await tapAt(await center('#export')); await sleep(400);
-    ok('T7 export dialog opens', await page.evaluate(() => !!document.querySelector('#export-dialog[open]')));
-    await tapAt(await center('#copy-json')); await sleep(500);
-    const copy = await page.evaluate(() => window.__calls.find(c => c.t === 'copy'));
-    let fb = null; try { fb = JSON.parse(copy.text); } catch (e) {}
-    ok('T7 copy JSON -> clipboard bridge', !!copy && !!fb, copy ? `len=${copy.len} keys=${Object.keys(fb || {}).join(',')}` : 'no call');
-    const annCount = fb ? countAnn(fb) : -1;
-    ok('T7 feedback JSON has 2 annotations', annCount === 2, annCount);
-    await tapAt(await center('#download-json')); await sleep(800);
-    const fbFile = await page.evaluate(() => (window.__calls.find(c => c.t === 'end') || {}).n);
-    ok('T7 download feedback -> bridge file', /-feedback\.(json|zip)$/.test(fbFile || ''), fbFile);
-    await page.keyboard.press('Escape'); await sleep(200);
+    await page.evaluate(() => document.getElementById('export').click());
+    await sleep(400);
+    ok('T7 反馈对话框不再打开', await page.evaluate(() => !document.querySelector('#export-dialog[open]')
+      && getComputedStyle(document.getElementById('export')).display === 'none'));
 
-    // ---- T8 保存批注图 ----
+    // ---- T8 保存批注图（入口隐藏，底层渲染仍供意见图复用）----
     await page.evaluate(() => { window.__calls.length = 0; });
-    await ensureUtility();
-    await tapAt(await center('#preview')); await sleep(1500);
+    await page.evaluate(() => document.getElementById('preview').click());
+    await sleep(1500);
     const png = await page.evaluate(() => window.__calls.find(c => c.t === 'end'));
     ok('T8 annotated PNG -> bridge', !!png && /-annotations\.png$/.test(png.n) && png.m === 'image/png' && png.len > 1000, png && `${png.n} ${png.m} ${png.len}`);
 
@@ -241,8 +237,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       const vb = await box('#stage');
       await tapAt({ x: vb.x + vb.width * 0.5, y: vb.y + vb.height * 0.3 }); await sleep(300);
       if (await dialogOpen()) await saveNote('这一帧字幕太小');
-      await ensureUtility();
-      await tapAt(await center('#preview')); await sleep(1500);
+      await page.evaluate(() => document.getElementById('preview').click()); await sleep(1500);
       const vpng = await page.evaluate(() => (window.__calls.find(c => c.t === 'end' && /png$/.test(c.n)) || {}).n);
       ok('T16 video frame annotated PNG export', !!vpng && /-\d+-annotations\.png$/.test(vpng), vpng);
     }

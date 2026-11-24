@@ -462,6 +462,30 @@
     actions.insertBefore(b, actions.firstChild);
   })();
 
+  /* ---------- 7. 移动端导出收口：只保留「意见图」 ---------- */
+  // 隐藏 导出反馈（JSON/ZIP）、保存 JSON 一组、保存批注图；
+  // 保留 保存项目（存档续改，返回键防丢依赖它）、意见图、主题、帮助。
+  // 节点只是不可见，底层能力还在——意见图内部仍借 #preview 渲染批注图。
+  (function () {
+    var style = document.createElement('style');
+    style.id = 'eh-export-scope';
+    style.textContent = '#export,.save-control,#export-dialog{display:none!important;}';
+    (document.head || document.documentElement).appendChild(style);
+    // 节点虽不可见，程序化点击仍会弹出一个看不见的模态框并挡住后续操作，
+    // 这里摘掉原来的回调（页面用 onclick 属性绑定，可安全置空）。
+    // 注意 #preview 的回调必须保留：意见图靠它渲染批注画布。
+    var ex = document.getElementById('export');
+    var sj = document.getElementById('save-json');
+    if (ex) ex.onclick = null;
+    if (sj) sj.onclick = null;
+    var pv = document.getElementById('preview');
+    if (pv) {
+      pv.style.display = 'none';
+      pv.setAttribute('aria-hidden', 'true');
+      pv.tabIndex = -1;
+    }
+  })();
+
   /* ---------- 5. 小屏体验微调 ---------- */
   try {
     var style = document.createElement('style');
