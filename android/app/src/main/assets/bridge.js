@@ -150,6 +150,10 @@
   }
 
   window.addEventListener('touchstart', function (e) {
+    // 兜底：双指手势若因手指滑出屏幕等原因没走完，blocking 会一直为真，
+    // 之后所有单指点击都被吞掉（表现为「点不动」）。任何新的单指触摸都说明
+    // 上一轮双指已经结束，这里主动解除屏蔽。
+    if (!gesture && blocking && e.touches.length === 1) blocking = false;
     if (e.touches.length === 2 && inViewport(e.touches[0]) && inViewport(e.touches[1])) {
       blocking = true;
       cancelActivePointers();
@@ -190,6 +194,8 @@
     if (gesture && e.touches.length < 2) {
       pe('pointerup', viewport, gesture.mid);
       gesture = null;
+      // 再兜一层：短时间内若没有新双指手势，解除屏蔽
+      setTimeout(function () { if (!gesture) blocking = false; }, 250);
     }
     if (e.touches.length === 0) blocking = false;
   }
@@ -447,19 +453,31 @@
     }
   }
 
-  // 工具坞新增入口（只存在于安卓壳里，页面代码不动）
+  // 右上角新增导出入口（只存在于安卓壳里，页面代码不动）
   (function addNotesImageButton() {
-    var actions = document.querySelector('.utility-actions');
+    var actions = document.querySelector('.header-actions');
     if (!actions || document.getElementById('eh-notes-image')) return;
     var b = document.createElement('button');
     b.id = 'eh-notes-image';
     b.type = 'button';
-    b.className = 'button';
+    b.className = 'button primary eh-notes-export';
     b.title = '导出意见图：原图圈画 + 下方意见栏';
     b.setAttribute('aria-label', '导出意见图');
-    b.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-notes"/></svg><span>意见图</span>';
+    b.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>意见图</span>';
     b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); exportNotesImage(); }, true);
-    actions.insertBefore(b, actions.firstChild);
+    var open = document.getElementById('open');
+    if (open && open.parentNode === actions) actions.insertBefore(b, open);
+    else actions.insertBefore(b, actions.firstChild);
+  })();
+
+  (function notesExportStyle() {
+    var st = document.createElement('style');
+    st.id = 'eh-notes-export-style';
+    // 窄屏只留图标，避免顶栏挤爆；圆形批注点补足触摸热区（视觉不变）
+    st.textContent = '@media (max-width:430px){#eh-notes-image span{display:none;}' +
+      '#eh-notes-image{padding:7px 8px;}}' +
+      '#pins .pin::after{content:"";position:absolute;inset:-9px;border-radius:50%;}';
+    (document.head || document.documentElement).appendChild(st);
   })();
 
   /* ---------- 7. 移动端导出收口：只保留「意见图」 ---------- */
