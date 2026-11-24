@@ -4,3 +4,5 @@ local.properties
 keystore/
 keystore.properties
 app/src/main/assets/EditHere.html
+node_modules/
+package-lock.json

@@ -217,24 +217,32 @@
   }
 
   // 从页面批注列表取文字与编号（与画面上编号一致）
+  // 页面结构：#notes 只渲染当前页的 .note-card（.note-number / 直接子 p）；
+  // 只有位移没写字的卡片是 .movement-empty，p 里是占位文字，不算意见；
+  // 整组意见（仅组图模式）渲染在 #group-notes .group-note（.group-note-number「整 N」/ 直接子 p）
   function collectNotes() {
     var items = [];
-    var cards = document.querySelectorAll('#notes .note-card');
+    var cards = document.querySelectorAll('#notes .note-card:not(.movement-empty)');
     for (var i = 0; i < cards.length; i++) {
       var numEl = cards[i].querySelector('.note-number');
       var kindEl = cards[i].querySelector('.note-kind');
-      var p = cards[i].querySelector('p');
+      var p = cards[i].querySelector(':scope > p');
       var text = p ? (p.textContent || '').replace(/\s+/g, ' ').trim() : '';
       if (!text) continue;
       items.push({
-        n: numEl ? (numEl.textContent || '').trim() : String(items.length + 1),
+        n: numEl ? (numEl.textContent || '').trim() : String(i + 1),
         kind: kindEl ? (kindEl.textContent || '').trim() : '',
         text: text
       });
     }
-    var g = document.querySelector('#group-note textarea, #group-note [contenteditable="true"], #group-note-text');
-    var gt = g && (g.value || g.textContent || '').replace(/\s+/g, ' ').trim();
-    if (gt) items.push({ n: '组', kind: '整组意见', text: gt });
+    var groups = document.querySelectorAll('#group-notes .group-note');
+    for (var j = 0; j < groups.length; j++) {
+      var gn = groups[j].querySelector('.group-note-number');
+      var gp = groups[j].querySelector(':scope > p');
+      var gt = gp ? (gp.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      if (!gt) continue;
+      items.push({ n: (gn ? (gn.textContent || '').trim() : '整 ' + (j + 1)), kind: '整组意见', text: gt });
+    }
     return items;
   }
 
@@ -247,7 +255,7 @@
       var timer = setTimeout(function () {
         pendingCapture = null;
         reject(new Error('没有取到批注图，请先添加批注'));
-      }, 5000);
+      }, 15000);   // 手机上大图渲染 + toBlob 可能较慢
       pendingCapture = function (blob, name) {
         clearTimeout(timer);
         if (!blob) { reject(new Error('没有取到批注图')); return; }
@@ -314,14 +322,20 @@
     var gapX = Math.round(fs * 0.62);
     var gapY = Math.round(fs * 0.7);
     var titleFs = Math.round(fs * 1.32);
-    var textW = W - badge - gapX;
+    // 编号徽章宽度按最宽标签（数字 / 「整 1」）自适应，正文列从徽章右侧起
+    var measure = document.createElement('canvas').getContext('2d');
+    measure.font = 'bold ' + Math.round(fs * 0.95) + 'px ' + FONT_STACK;
+    var badgeW = badge;
+    for (var bi = 0; bi < notes.length; bi++) {
+      badgeW = Math.max(badgeW, Math.ceil(measure.measureText(notes[bi].n).width + fs * 0.6));
+    }
+    var textW = W - badgeW - gapX;
 
     var canvasW = W + pad * 2;
-    var textX = pad + badge + gapX;
+    var textX = pad + badgeW + gapX;
     var y = pad + H + pad;                       // 图下留白后接意见栏
 
     var linesByNote = [];
-    var measure = document.createElement('canvas').getContext('2d');
     measure.font = fs + 'px ' + FONT_STACK;
     for (var i = 0; i < notes.length; i++) {
       var wrapped = wrapText(measure, notes[i].text, textW);
@@ -376,15 +390,27 @@
       var lines = linesByNote[j];
       var blockH = Math.max(badge, lines.length * lh);
       var cy = ty + Math.max(badge, lh) / 2;
-      p.beginPath();
-      p.arc(pad + badge / 2, cy, badge / 2, 0, Math.PI * 2);
       p.fillStyle = '#346df1';
-      p.fill();
+      if (badgeW <= badge + 1) {
+        p.beginPath();
+        p.arc(pad + badge / 2, cy, badge / 2, 0, Math.PI * 2);
+        p.fill();
+      } else {
+        var r = badge / 2;
+        p.beginPath();
+        p.moveTo(pad + r, cy - r);
+        p.lineTo(pad + badgeW - r, cy - r);
+        p.arc(pad + badgeW - r, cy, r, -Math.PI / 2, Math.PI / 2);
+        p.lineTo(pad + r, cy + r);
+        p.arc(pad + r, cy, r, Math.PI / 2, Math.PI * 1.5);
+        p.closePath();
+        p.fill();
+      }
       p.fillStyle = '#ffffff';
       p.font = 'bold ' + Math.round(fs * 0.95) + 'px ' + FONT_STACK;
       p.textAlign = 'center';
       p.textBaseline = 'middle';
-      p.fillText(String(notes[j].n), pad + badge / 2, cy + 1);
+      p.fillText(notes[j].n, pad + badgeW / 2, cy + 1);
       p.textAlign = 'left';
       p.textBaseline = 'alphabetic';
       p.fillStyle = '#1f2937';

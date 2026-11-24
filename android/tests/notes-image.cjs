@@ -103,6 +103,67 @@ async function scenario(name, w, h, image, notes, tag) {
     svg(900, 600, '<rect width="900" height="600" fill="#fafbfd"/><rect x="60" y="70" width="420" height="46" fill="#1f3a66"/><rect x="60" y="180" width="780" height="330" fill="#e9eef7"/>'),
     [], 'plain'));
 
+  // 组图模式：当前页 1 条批注 + 1 条整组意见（徽章「整 1」，胶囊样式）
+  {
+    const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox', '--disable-gpu'] });
+    const ctx = await browser.newContext({ viewport: { width: 420, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
+    const p = await ctx.newPage();
+    const errors = [];
+    p.on('pageerror', e => errors.push(e.message));
+    await p.goto('file://' + FIXTURE);
+    await p.waitForTimeout(350);
+    const srcA = path.join(OUT, 'eh-set-a.png'), srcB = path.join(OUT, 'eh-set-b.png');
+    for (const [f, body] of [[srcA, '<rect width="800" height="600" fill="#1f3a66"/><rect x="60" y="60" width="300" height="60" fill="#FFB352"/>'],
+                             [srcB, '<rect width="800" height="600" fill="#132C4A"/><circle cx="400" cy="300" r="120" fill="#3E74EF"/>']]) {
+      const png = await p.evaluate(async ([w, h, src]) => {
+        const img = new Image(); img.src = src; await img.decode();
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0);
+        return c.toDataURL('image/png').split(',')[1];
+      }, [800, 600, svg(800, 600, body)]);
+      fs.writeFileSync(f, Buffer.from(png, 'base64'));
+    }
+    const [chooser] = await Promise.all([p.waitForEvent('filechooser', { timeout: 4000 }), p.evaluate(() => document.getElementById('open').click())]);
+    await chooser.setFiles([srcA, srcB]);
+    for (let i = 0; i < 400 && await p.evaluate(() => !!document.body.dataset.busy); i++) await p.waitForTimeout(50);
+    await p.waitForTimeout(350);
+    const isSet = await p.locator('#set-bar').isVisible();
+    const box = await p.locator('#stage').boundingBox();
+    await p.evaluate(([x, y]) => {
+      const st = document.getElementById('stage');
+      const base = { bubbles: true, cancelable: true, composed: true, pointerId: 42, pointerType: 'touch', isPrimary: true, button: 0 };
+      st.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, { buttons: 1, clientX: x, clientY: y })));
+      st.dispatchEvent(new PointerEvent('pointermove', Object.assign({}, base, { buttons: 1, clientX: x + 30, clientY: y + 24 })));
+      st.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, { buttons: 0, clientX: x + 30, clientY: y + 24 })));
+    }, [box.x + box.width * 0.3, box.y + box.height * 0.3]);
+    await p.waitForTimeout(300);
+    await p.locator('#note-text').fill('本页：黄色块改小一点');
+    await p.locator('#note-dialog button:not([type=button])').last().click();
+    await p.waitForTimeout(300);
+    await p.evaluate(() => document.getElementById('group-note').click());
+    await p.waitForTimeout(200);
+    const groupDialog = await p.locator('#group-note-dialog[open]').count();
+    await p.locator('#group-note-text').fill('整组统一圆角 16，主色统一 #3E74EF');
+    await p.evaluate(() => document.getElementById('group-note-form').requestSubmit());
+    await p.waitForTimeout(300);
+    const groupCards = await p.locator('#group-notes .group-note').count();
+
+    await p.evaluate(() => { window.__calls.length = 0; window.__files = {}; document.getElementById('eh-notes-image').click(); });
+    await p.waitForTimeout(3200);
+    const keys = await p.evaluate(() => Object.keys(window.__files));
+    if (keys.length) {
+      const data = await p.evaluate(k => window.__files[k], keys[0]);
+      const outFile = path.join(OUT, 'eh-notes-set.png');
+      fs.writeFileSync(outFile, Buffer.from(data, 'base64'));
+      console.log(`  ${outFile}  ${fs.statSync(outFile).size} bytes`);
+    }
+    const ok = isSet && groupDialog === 1 && groupCards === 1 && keys.length === 1 && /-notes\.png$/.test(keys[0]) && errors.length === 0;
+    console.log(`[组图 800×600 · 1 条 + 整组 1 条] ${ok ? 'PASS' : 'FAIL'} set=${isSet} groupDialog=${groupDialog} groupCards=${groupCards} file=${keys[0]}`
+      + (errors.length ? ` errors=${errors.join(' | ')}` : ''));
+    results.push(ok);
+    await browser.close();
+  }
+
   const passed = results.filter(Boolean).length;
   console.log(`\n${passed}/${results.length} 场景通过`);
   process.exit(passed === results.length ? 0 : 1);
