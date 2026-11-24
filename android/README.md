@@ -34,3 +34,17 @@ release 签名读取 `keystore.properties`（指向 `keystore/edithere.jks`）�
 - 导出目前落到下载目录，后续可加系统分享面板直达 AI/电脑
 - AI 闭环（MCP/agent.cjs）保留在桌面侧：手机导出兼容 JSON，桌面 agent 读取继续改
 - 快捷键（V/H/Ctrl+S 等）无实体键盘时不可用，后续可补浮动按钮
+## 返回键与安全
+
+- 页面用 `beforeunload` 拦未保存退出，但 WebView 不触发；壳在已有素材时拦截返回键，
+  弹出「保存项目 / 不保存退出 / 取消」。无素材时直接退出。
+- `shouldOverrideUrlLoading` 仅放行 `file:///android_asset/`、`blob:`、`data:`、`javascript:`，
+  其余导航一律拦截（桥接对象暴露了写文件能力，不能让外部页面调用）。
+- API 26–28 写公共下载目录需 `WRITE_EXTERNAL_STORAGE` 运行时权限，首次保存会申请。
+
+## 回归
+
+`tests/regression.cjs`：playwright-core + CDP 真实多点触控，覆盖打开素材、框选/点/智能批注、
+撤销重做、保存项目与重开、导出 JSON/剪贴板/批注图、组图、视频帧批注、帮助、捏合缩放、
+双指平移、单指拖动中落第二指不串扰、360px 顶栏，共 39 项断言。
+运行：`npm i playwright-core` 后 `node tests/regression.cjs`（需本机 Chromium）。

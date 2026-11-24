@@ -18,6 +18,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.JsResult;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -57,10 +58,20 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(false); // file:///android_asset 仍可访问
 
         web.addJavascriptInterface(new Bridge(), "AndroidBridge");
+        WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 injectBridge(view);
+            }
+
+            // 页面是离线单文件；桥接对象暴露了写文件能力，禁止一切非 asset 导航，
+            // 防止被注入的页面跳转到外部站点后继续调用 AndroidBridge。
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                String u = request.getUrl().toString();
+                return !(u.startsWith("file:///android_asset/") || u.startsWith("blob:")
+                        || u.startsWith("data:") || u.startsWith("javascript:"));
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -112,15 +123,12 @@ public class MainActivity extends Activity {
     }
 
     private void injectBridge(WebView view) {
-        try (InputStream in = getAssets().open("bridge.js")) {
-            byte[] buf = new byte[in.available()];
-            int read = 0;
-            while (read < buf.length) {
-                int n = in.read(buf, read, buf.length - read);
-                if (n < 0) break;
-                read += n;
-            }
-            view.evaluateJavascript(new String(buf, 0, read, StandardCharsets.UTF_8), null);
+        try (InputStream in = getAssets().open("bridge.js");
+             java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            view.evaluateJavascript(out.toString("UTF-8"), null);
         } catch (Exception e) {
             toast("注入桥接失败: " + e.getMessage());
         }
@@ -144,10 +152,28 @@ public class MainActivity extends Activity {
         pickCallback = null;
     }
 
+    private boolean exiting;
+
+    /**
+     * 页面用 beforeunload 拦未保存退出，但 WebView 不触发它。已有素材打开时
+     * 返回键先确认：可直接「保存项目」或丢弃退出；没有素材时直接退出。
+     */
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        if (exiting) { super.onBackPressed(); return; }
+        web.evaluateJavascript("(function(){var b=document.getElementById('export');return !!b&&!b.disabled;})()", value -> {
+            if (!"true".equals(value)) { finish(); return; }
+            runOnUiThread(() -> new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("退出编辑？")
+                    .setMessage("未保存的批注和布局调整会丢失。可先「保存项目」到下载目录。")
+                    .setPositiveButton("保存项目", (d, w) -> web.evaluateJavascript(
+                            "(function(){var t=document.getElementById('utility-toggle'),b=document.getElementById('save-project');"
+                                    + "if(t&&getComputedStyle(t).display!=='none'&&t.getAttribute('aria-expanded')!=='true')t.click();"
+                                    + "if(b&&!b.disabled)b.click();})()", null))
+                    .setNegativeButton("不保存退出", (d, w) -> { exiting = true; finish(); })
+                    .setNeutralButton("取消", null)
+                    .show());
+        });
     }
 
     @Override
@@ -204,6 +230,13 @@ public class MainActivity extends Activity {
                         out.write(bytes);
                     }
                 } else {
+                    // API 26–28 写公共下载目录需运行时权限
+                    if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1002);
+                        toast("需要存储权限才能保存，请授权后重试");
+                        return;
+                    }
                     File dir = Environment.getExternalStoragePublicDirectory(
                             Environment.DIRECTORY_DOWNLOADS);
                     //noinspection ResultOfMethodCallIgnored
