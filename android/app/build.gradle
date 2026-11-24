@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace 'com.guzifeng.edithere'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.guzifeng.edithere'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '0.1'
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// 单一事实来源： assets 里的 EditHere.html 始终从 ../web/EditHere.html 同步，
+// 改 web/src 后先跑 node web/build.cjs 再构建 APK 即可。
+tasks.register('syncWebHtml', Copy) {
+    from rootProject.file('../web/EditHere.html')
+    into 'src/main/assets'
+}
+tasks.named('preBuild') { dependsOn 'syncWebHtml' }
