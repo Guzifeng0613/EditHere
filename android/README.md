@@ -8,6 +8,9 @@
 
 - 打开素材：系统文件选择器（图片/视频/JSON 项目/ZIP），走页面原生 `<input type=file>`
 - 导出：拦截页面 blob 下载，分块回传 Java，存入系统下载目录（JSON/ZIP/PNG/项目文件）
+- 意见图（壳内新增，页面零修改）：把批注后的原图（含圈画）贴到一张白底大画布上，
+  下方按内容自适应扩充「修改意见」栏（编号圆点与图上序号对应），导出 `*-notes.png`；
+  入口在工具坞「意见图」，字号/边距随原图尺寸等比，超过 2400 万像素等比缩小防 OOM
 - 复制 JSON：`navigator.clipboard.writeText` 桥接到系统剪贴板
 - 触控：单指批注/拖动沿用页面 Pointer Events；双指捏合翻译为 ctrl+wheel 缩放，
   双指拖动翻译为合成中键 pointer 事件平移（页面 pan 期间忽略 wheel，
@@ -48,3 +51,7 @@ release 签名读取 `keystore.properties`（指向 `keystore/edithere.jks`）�
 撤销重做、保存项目与重开、导出 JSON/剪贴板/批注图、组图、视频帧批注、帮助、捏合缩放、
 双指平移、单指拖动中落第二指不串扰、360px 顶栏，共 39 项断言。
 运行：`npm i playwright-core` 后 `node tests/regression.cjs`（需本机 Chromium）。
+
+`tests/notes-image.cjs`：意见图单独验证（竖图 600×900 两条意见、横图 1200×675 一条、
+1080×2400 八条含中英混排、无意见时导出带白边原图），把 `endFile` 的 base64 落地到
+`/tmp/eh-notes-*.png` 供目视核对编号、换行与留白。

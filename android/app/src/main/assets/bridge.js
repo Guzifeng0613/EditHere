@@ -15,6 +15,7 @@
 
   /* ---------- 1. blob 登记表 ---------- */
   var blobs = {};
+  var pendingCapture = null;                    // 供意见图导出复用页面渲染结果
   var origCreate = URL.createObjectURL.bind(URL);
   var origRevoke = URL.revokeObjectURL.bind(URL);
   URL.createObjectURL = function (b) {
@@ -29,6 +30,12 @@
 
   /* ---------- 2. 下载拦截 ---------- */
   function sendBlob(name, blob) {
+    if (pendingCapture) {                       // 意见图导出时先截下页面渲染的批注图
+      var take = pendingCapture;
+      pendingCapture = null;
+      take(blob, name);
+      return;
+    }
     var reader = new FileReader();
     reader.onload = function () {
       try {
@@ -188,6 +195,246 @@
   }
   window.addEventListener('touchend', endGesture, { capture: true, passive: true });
   window.addEventListener('touchcancel', endGesture, { capture: true, passive: true });
+
+  /* ---------- 6. 意见图：原图（含圈画）贴白底 + 下方自适应意见栏 ---------- */
+  function toast(msg) {
+    try {
+      var t = document.getElementById('eh-toast');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'eh-toast';
+        t.style.cssText = 'position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:99;' +
+          'max-width:86vw;padding:9px 15px;border-radius:12px;background:rgba(16,24,38,.92);color:#fff;' +
+          'font:13px/1.4 -apple-system,"PingFang SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.24);' +
+          'transition:opacity .2s;text-align:center;pointer-events:none;';
+        document.body.appendChild(t);
+      }
+      t.textContent = msg;
+      t.style.opacity = '1';
+      clearTimeout(t._timer);
+      t._timer = setTimeout(function () { t.style.opacity = '0'; }, 2600);
+    } catch (e) {}
+  }
+
+  // 从页面批注列表取文字与编号（与画面上编号一致）
+  function collectNotes() {
+    var items = [];
+    var cards = document.querySelectorAll('#notes .note-card');
+    for (var i = 0; i < cards.length; i++) {
+      var numEl = cards[i].querySelector('.note-number');
+      var kindEl = cards[i].querySelector('.note-kind');
+      var p = cards[i].querySelector('p');
+      var text = p ? (p.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      if (!text) continue;
+      items.push({
+        n: numEl ? (numEl.textContent || '').trim() : String(items.length + 1),
+        kind: kindEl ? (kindEl.textContent || '').trim() : '',
+        text: text
+      });
+    }
+    var g = document.querySelector('#group-note textarea, #group-note [contenteditable="true"], #group-note-text');
+    var gt = g && (g.value || g.textContent || '').replace(/\s+/g, ' ').trim();
+    if (gt) items.push({ n: '组', kind: '整组意见', text: gt });
+    return items;
+  }
+
+  // 借页面自己的「保存批注图」渲染结果（布局位移、箭头、圈画、编号都在里面）
+  function captureAnnotatedImage() {
+    return new Promise(function (resolve, reject) {
+      var preview = document.getElementById('preview');
+      if (!preview || preview.disabled) { reject(new Error('先打开图片或视频，并添加批注')); return; }
+      if (document.body.dataset.busy) { reject(new Error('正在处理上一个操作，稍候再试')); return; }
+      var timer = setTimeout(function () {
+        pendingCapture = null;
+        reject(new Error('没有取到批注图，请先添加批注'));
+      }, 5000);
+      pendingCapture = function (blob, name) {
+        clearTimeout(timer);
+        if (!blob) { reject(new Error('没有取到批注图')); return; }
+        resolve({ blob: blob, name: name || '' });
+      };
+      preview.click();
+    });
+  }
+
+  // 中文/英文混排断行：ASCII 单词整体保留，CJK 逐字可断
+  function tokenize(text) {
+    var out = [], buf = '';
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (/[A-Za-z0-9_'\-.,:;!?%$/\\@#&*+=<>()[\]{}|~]/.test(ch)) { buf += ch; continue; }
+      if (buf) { out.push(buf); buf = ''; }
+      if (ch === ' ') out.push(' ');
+      else out.push(ch);
+    }
+    if (buf) out.push(buf);
+    return out;
+  }
+
+  function wrapText(ctx, text, maxWidth) {
+    var lines = [], line = '';
+    var tokens = tokenize(text);
+    for (var i = 0; i < tokens.length; i++) {
+      var t = tokens[i];
+      var test = line + t;
+      if (ctx.measureText(test).width > maxWidth && line.replace(/\s+$/, '') !== '') {
+        lines.push(line.replace(/\s+$/, ''));
+        line = t === ' ' ? '' : t;
+      } else {
+        line = test;
+      }
+      // 单个超长英文串，硬切
+      while (ctx.measureText(line).width > maxWidth && line.length > 1) {
+        var cut = line.length - 1;
+        while (cut > 1 && ctx.measureText(line.slice(0, cut)).width > maxWidth) cut--;
+        lines.push(line.slice(0, cut));
+        line = line.slice(cut);
+      }
+    }
+    if (line.replace(/\s+$/, '') !== '') lines.push(line.replace(/\s+$/, ''));
+    return lines;
+  }
+
+  var FONT_STACK = '"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",sans-serif';
+  var MAX_PIXELS = 24e6;   // 手机内存安全上限，超了等比缩小
+
+  async function buildNotesImage(imageBlob, baseName) {
+    var url = URL.createObjectURL(imageBlob);
+    var img = new Image();
+    img.src = url;
+    try { await img.decode(); } finally { /* 下面统一 revoke */ }
+    var W = img.naturalWidth, H = img.naturalHeight;
+    var notes = collectNotes();
+
+    // 设计尺寸：字号随原图宽度等比，保证大图小图观感一致
+    var pad = Math.round(Math.max(32, W * 0.045));
+    var fs = Math.round(Math.max(17, Math.min(76, W / 34)));
+    var lh = Math.round(fs * 1.62);
+    var badge = Math.round(fs * 1.55);
+    var gapX = Math.round(fs * 0.62);
+    var gapY = Math.round(fs * 0.7);
+    var titleFs = Math.round(fs * 1.32);
+    var textW = W - badge - gapX;
+
+    var canvasW = W + pad * 2;
+    var textX = pad + badge + gapX;
+    var y = pad + H + pad;                       // 图下留白后接意见栏
+
+    var linesByNote = [];
+    var measure = document.createElement('canvas').getContext('2d');
+    measure.font = fs + 'px ' + FONT_STACK;
+    for (var i = 0; i < notes.length; i++) {
+      var wrapped = wrapText(measure, notes[i].text, textW);
+      linesByNote.push(wrapped);
+      y += Math.max(badge, wrapped.length * lh) + gapY;
+    }
+    var titleText = notes.length ? '修改意见 · ' + notes.length + ' 条' : '修改意见';
+    var titleTop = pad + H + pad;
+    y += Math.round(titleFs * 1.9);
+    // 底部多留一点呼吸空间，避免末条文字贴边
+    var canvasH = notes.length ? y + pad + Math.round(fs * 0.5) : pad * 2 + H;
+
+    var K = 1;
+    if (canvasW * canvasH > MAX_PIXELS) K = Math.sqrt(MAX_PIXELS / (canvasW * canvasH));
+
+    var out = document.createElement('canvas');
+    out.width = Math.round(canvasW * K);
+    out.height = Math.round(canvasH * K);
+    var p = out.getContext('2d');
+    p.setTransform(K, 0, 0, K, 0, 0);
+    p.imageSmoothingQuality = 'high';
+
+    p.fillStyle = '#ffffff';
+    p.fillRect(0, 0, canvasW, canvasH);
+
+    // 原图（批注后的）居中贴入，细边框区分画面与白边
+    p.drawImage(img, pad, pad, W, H);
+    p.strokeStyle = '#dfe4ec';
+    p.lineWidth = Math.max(1, W / 1200);
+    p.strokeRect(pad + .5, pad + .5, W - 1, H - 1);
+
+    if (!notes.length) {
+      URL.revokeObjectURL(url);
+      return out;
+    }
+
+    // 标题
+    p.fillStyle = '#111827';
+    p.font = 'bold ' + titleFs + 'px ' + FONT_STACK;
+    p.textBaseline = 'alphabetic';
+    p.fillText(titleText, pad, titleTop + Math.round(titleFs * 1.15));
+    p.strokeStyle = '#e5e9f0';
+    p.lineWidth = Math.max(1, W / 1400);
+    p.beginPath();
+    p.moveTo(pad, titleTop + Math.round(titleFs * 1.62));
+    p.lineTo(pad + W, titleTop + Math.round(titleFs * 1.62));
+    p.stroke();
+
+    // 逐条意见：编号圆点 + 正文
+    var ty = titleTop + Math.round(titleFs * 1.9) + Math.round(fs * 0.2);
+    for (var j = 0; j < notes.length; j++) {
+      var lines = linesByNote[j];
+      var blockH = Math.max(badge, lines.length * lh);
+      var cy = ty + Math.max(badge, lh) / 2;
+      p.beginPath();
+      p.arc(pad + badge / 2, cy, badge / 2, 0, Math.PI * 2);
+      p.fillStyle = '#346df1';
+      p.fill();
+      p.fillStyle = '#ffffff';
+      p.font = 'bold ' + Math.round(fs * 0.95) + 'px ' + FONT_STACK;
+      p.textAlign = 'center';
+      p.textBaseline = 'middle';
+      p.fillText(String(notes[j].n), pad + badge / 2, cy + 1);
+      p.textAlign = 'left';
+      p.textBaseline = 'alphabetic';
+      p.fillStyle = '#1f2937';
+      p.font = fs + 'px ' + FONT_STACK;
+      for (var k = 0; k < lines.length; k++) {
+        p.fillText(lines[k], textX, ty + lh * k + fs * 1.0);
+      }
+      ty += blockH + gapY;
+    }
+
+    URL.revokeObjectURL(url);
+    return out;
+  }
+
+  function notesImageName(raw) {
+    var base = (raw || '').replace(/\.png$/i, '').replace(/-annotations$/i, '');
+    if (!base) base = 'edithere';
+    return base + '-notes.png';
+  }
+
+  async function exportNotesImage() {
+    try {
+      var cap = await captureAnnotatedImage();
+      var canvas = await buildNotesImage(cap.blob, cap.name);
+      var blob = await new Promise(function (resolve, reject) {
+        canvas.toBlob(function (b) { b ? resolve(b) : reject(new Error('图片编码失败')); }, 'image/png');
+      });
+      sendBlob(notesImageName(cap.name), blob);
+      toast(collectNotes().length ? '已生成意见图，正在保存到下载目录'
+        : '还没有文字意见，已导出带白边的原图');
+    } catch (e) {
+      toast(e && e.message ? e.message : '意见图导出失败');
+      log('notes image failed: ' + (e && e.message));
+    }
+  }
+
+  // 工具坞新增入口（只存在于安卓壳里，页面代码不动）
+  (function addNotesImageButton() {
+    var actions = document.querySelector('.utility-actions');
+    if (!actions || document.getElementById('eh-notes-image')) return;
+    var b = document.createElement('button');
+    b.id = 'eh-notes-image';
+    b.type = 'button';
+    b.className = 'button';
+    b.title = '导出意见图：原图圈画 + 下方意见栏';
+    b.setAttribute('aria-label', '导出意见图');
+    b.innerHTML = '<svg class="icon" aria-hidden="true"><use href="#i-notes"/></svg><span>意见图</span>';
+    b.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); exportNotesImage(); }, true);
+    actions.insertBefore(b, actions.firstChild);
+  })();
 
   /* ---------- 5. 小屏体验微调 ---------- */
   try {
